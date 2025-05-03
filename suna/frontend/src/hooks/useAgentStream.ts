@@ -257,7 +257,16 @@ export function useAgentStream(callbacks: AgentStreamCallbacks, threadId: string
         if (message.message_id) callbacks.onMessage(message);
         break;
       default:
-        console.warn('[useAgentStream] Unhandled message type:', message.type);
+        // Handle messages with undefined type
+        if (message.type === undefined) {
+          console.error('[useAgentStream] Received message without type property:', message);
+          // Still process the message if it has content
+          if (message.content) {
+            callbacks.onMessage(message);
+          }
+        } else {
+          console.warn('[useAgentStream] Unhandled message type:', message.type);
+        }
     }
   }, [threadId, setMessages, status, toolCall, callbacks, finalizeStream, updateStatus]);
 
@@ -492,4 +501,4 @@ export function useAgentStream(callbacks: AgentStreamCallbacks, threadId: string
     startStreaming,
     stopStreaming,
   };
-} 
+}

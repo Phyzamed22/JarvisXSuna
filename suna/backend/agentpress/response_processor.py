@@ -391,7 +391,7 @@ class ResponseProcessor:
                 else:
                     logger.error(f"Failed to save final assistant message for thread {thread_id}")
                     # Save and yield an error status
-                    err_content = {"role": "system", "status_type": "error", "message": "Failed to save final assistant message"}
+                    err_content = {"role": "system", "status_type": "error", "type": "status", "message": "Failed to save final assistant message"}
                     err_msg_obj = await self.add_message(
                         thread_id=thread_id, type="status", content=err_content, 
                         is_llm_message=False, metadata={"thread_run_id": thread_run_id}
@@ -554,7 +554,7 @@ class ResponseProcessor:
         except Exception as e:
             logger.error(f"Error processing stream: {str(e)}", exc_info=True)
             # Save and yield error status message
-            err_content = {"role": "system", "status_type": "error", "message": str(e)}
+            err_content = {"role": "system", "status_type": "error", "type": "status", "message": str(e)}
             err_msg_obj = await self.add_message(
                 thread_id=thread_id, type="status", content=err_content, 
                 is_llm_message=False, metadata={"thread_run_id": thread_run_id if 'thread_run_id' in locals() else None}
@@ -660,7 +660,7 @@ class ResponseProcessor:
                  yield assistant_message_object
             else:
                  logger.error(f"Failed to save non-streaming assistant message for thread {thread_id}")
-                 err_content = {"role": "system", "status_type": "error", "message": "Failed to save assistant message"}
+                 err_content = {"role": "system", "status_type": "error", "type": "status", "message": "Failed to save assistant message"}
                  err_msg_obj = await self.add_message(
                      thread_id=thread_id, type="status", content=err_content, 
                      is_llm_message=False, metadata={"thread_run_id": thread_run_id}
@@ -757,7 +757,7 @@ class ResponseProcessor:
         except Exception as e:
              logger.error(f"Error processing non-streaming response: {str(e)}", exc_info=True)
              # Save and yield error status
-             err_content = {"role": "system", "status_type": "error", "message": str(e)}
+             err_content = {"role": "system", "status_type": "error", "type": "status", "message": str(e)}
              err_msg_obj = await self.add_message(
                  thread_id=thread_id, type="status", content=err_content, 
                  is_llm_message=False, metadata={"thread_run_id": thread_run_id if 'thread_run_id' in locals() else None}
@@ -1414,7 +1414,7 @@ class ResponseProcessor:
         error_msg = str(context.error) if context.error else "Unknown error during tool execution"
         tool_name = context.xml_tag_name or context.function_name
         content = {
-            "role": "assistant", "status_type": "tool_error",
+            "role": "assistant", "status_type": "tool_error", "type": "status",
             "function_name": context.function_name, "xml_tag_name": context.xml_tag_name,
             "message": f"Error executing tool {tool_name}: {error_msg}",
             "tool_index": context.tool_index,

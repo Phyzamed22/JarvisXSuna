@@ -20,6 +20,7 @@ from agentpress.response_processor import (
     ResponseProcessor, 
     ProcessorConfig    
 )
+from agentpress.tool_registration_manager import tool_manager
 from services.supabase import DBConnection
 from utils.logger import logger
 
@@ -45,10 +46,33 @@ class ThreadManager:
             add_message_callback=self.add_message
         )
         self.context_manager = ContextManager()
+        
+        # Ensure tools are initialized before any LLM calls
+        if not hasattr(self, '_tools_initialized'):
+            logger.info("Initializing tools before first LLM call")
+            tool_manager.initialize_tools()
+            self._tools_initialized = True
 
     def add_tool(self, tool_class: Type[Tool], function_names: Optional[List[str]] = None, **kwargs):
-        """Add a tool to the ThreadManager."""
+        """Add a tool to the ThreadManager.
+        
+        This method registers the tool with both the tool registry and the
+        tool registration manager to ensure proper initialization.
+        """
+        # Register with the tool registry for function calling
         self.tool_registry.register_tool(tool_class, function_names, **kwargs)
+        
+        # Also register with the tool manager for proper initialization
+        tool_id = tool_class.__name__
+        tool_manager.register_tool(tool_class, tool_id=tool_id, **kwargs)
+        
+        logger.debug(f"Tool {tool_id} registered with both registry and manager")
+        
+        # Initialize tools if this is the first tool being added
+        if not hasattr(self, '_tools_initialized'):
+            logger.info("Initializing tools after first registration")
+            tool_manager.initialize_tools()
+            self._tools_initialized = True
 
     async def add_message(
         self, 

@@ -20,9 +20,38 @@ from utils.logger import logger
 from utils.config import config
 from datetime import datetime
 import traceback
+from contextlib import contextmanager
 
 # litellm.set_verbose=True
 litellm.modify_params=True
+
+@contextmanager
+def api_key_context(api_key=None, provider=None):
+    """Context manager for handling API key switching.
+    
+    This ensures that the API key is properly restored after use,
+    preventing authentication context leakage between different services.
+    
+    Args:
+        api_key: The API key to use within this context
+        provider: Optional provider name for logging
+    """
+    # Store the current API key
+    previous_api_key = getattr(litellm, 'api_key', None)
+    provider_str = f" for {provider}" if provider else ""
+    
+    try:
+        if api_key:
+            logger.debug(f"Setting API key{provider_str} within context manager")
+            litellm.api_key = api_key
+        yield
+    finally:
+        # Always restore the previous API key
+        if previous_api_key:
+            logger.debug(f"Restoring previous API key after{provider_str} context")
+            litellm.api_key = previous_api_key
+        else:
+            logger.debug(f"No previous API key to restore after{provider_str} context")
 
 # Enable caching to improve response times for similar queries
 litellm.cache = litellm.Cache(type="redis", host=config.REDIS_HOST, port=config.REDIS_PORT, 
@@ -31,10 +60,10 @@ litellm.cache = litellm.Cache(type="redis", host=config.REDIS_HOST, port=config.
 # Set up model fallback routing for better performance and reliability
 litellm.router = litellm.Router(
     model_list=[
-        # Primary model - powerful but can be slower
-        {"model_name": "openrouter/deepseek/deepseek-chat-v3-0324:free", "litellm_params": {"model": "openrouter/deepseek/deepseek-chat-v3-0324:free", "timeout": 30}},
-        # Fallback model - faster response for simpler queries
-        {"model_name": "openai/gpt-3.5-turbo", "litellm_params": {"model": "openai/gpt-3.5-turbo", "timeout": 15}},
+        # Primary model - DeepSeek Chat V3
+        {"model_name": "deepseek/deepseek-chat-v3-0324:free", "litellm_params": {"model": "deepseek/deepseek-chat-v3-0324:free", "timeout": 30}},
+        # Secondary model - alternative if primary fails
+        {"model_name": "openrouter/mistralai/mistral-7b-instruct", "litellm_params": {"model": "openrouter/mistralai/mistral-7b-instruct", "timeout": 20}},
     ],
     routing_strategy="fallback",  # Try models in order, fallback on timeout/error
     redis_host=config.REDIS_HOST,
@@ -63,16 +92,8 @@ def setup_api_keys() -> None:
         logger.debug("OpenRouter API key set successfully")
     else:
         logger.warning("No OpenRouter API key found - this may cause API calls to fail")
-    
-    # Check for TogetherAI API key (kept for backward compatibility)
-    together_key = config.TOGETHERAI_API_KEY
-    if together_key:
-        logger.debug("TogetherAI API key set successfully")
         
-    # Check for Groq API key (kept for backward compatibility)
-    groq_key = config.GROQ_API_KEY
-    if groq_key:
-        logger.debug("Groq API key set successfully")
+    # Note: OpenAI API key is no longer used
 
 async def handle_error(error: Exception, attempt: int, max_attempts: int) -> None:
     """Handle API errors with appropriate delays and logging."""
@@ -212,47 +233,53 @@ async def make_llm_api_call(
         use_router = False
         logger.debug(f"Using direct API call for model {params['model']} (not in router)")
     
-    # Set OpenAI API key if available
-    openai_key = config.OPENAI_API_KEY
-    if openai_key and openai_key != "sk-1234efgh5678ijkl1234efgh5678ijkl1234efgh":
-        logger.debug("Using OpenAI API key for API calls")
-        litellm.api_key = openai_key
-    
-    last_error = None
-    for attempt in range(MAX_RETRIES):
-        try:
-            logger.debug(f"Attempt {attempt + 1}/{MAX_RETRIES}")
-            # logger.debug(f"API request parameters: {json.dumps(params, indent=2)}")
-            
-            if use_router:
-                logger.debug("Using model router with fallback strategy")
-                if stream:
-                    return await litellm.router.acompletion(**params)
+    # Get OpenRouter API key
+    openrouter_key = config.OPENROUTER_API_KEY
+    if not openrouter_key:
+        logger.warning("No OpenRouter API key found - API calls will likely fail")
+        
+    # Use the context manager to handle API key isolation
+    with api_key_context(api_key=openrouter_key, provider="OpenRouter"):
+        logger.debug(f"Using OpenRouter API key within isolated context")
+        logger.debug(f"Current API key: {litellm.api_key[:5]}... (truncated for security)" if litellm.api_key else "No API key set")
+        
+        # The rest of the function will execute within this context, ensuring proper API key isolation
+        last_error = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                logger.debug(f"Attempt {attempt + 1}/{MAX_RETRIES}")
+                # logger.debug(f"API request parameters: {json.dumps(params, indent=2)}")
+                
+                if use_router:
+                    logger.debug("Using model router with fallback strategy")
+                    if stream:
+                        return await litellm.router.acompletion(**params)
+                    else:
+                        response = await litellm.router.acompletion(**params)
                 else:
-                    response = await litellm.router.acompletion(**params)
-            else:
-                if stream:
-                    return await litellm.acompletion(**params)
-                else:
-                    response = await litellm.acompletion(**params)
-            
-            logger.debug(f"Successfully received API response from {model_name}")
-            logger.debug(f"Response: {response}")
-            return response
-            
-        except (litellm.exceptions.RateLimitError, OpenAIError, json.JSONDecodeError) as e:
-            last_error = e
-            await handle_error(e, attempt, MAX_RETRIES)
-            
-        except Exception as e:
-            logger.error(f"Unexpected error during API call: {str(e)}", exc_info=True)
-            raise LLMError(f"API call failed: {str(e)}")
-    
-    error_msg = f"Failed to make API call after {MAX_RETRIES} attempts"
-    if last_error:
-        error_msg += f". Last error: {str(last_error)}"
-    logger.error(error_msg, exc_info=True)
-    raise LLMRetryError(error_msg)
+                    if stream:
+                        return await litellm.acompletion(**params)
+                    else:
+                        response = await litellm.acompletion(**params)
+                
+                logger.debug(f"Successfully received API response from {model_name}")
+                logger.debug(f"Response: {response}")
+                return response
+                
+            except (litellm.exceptions.RateLimitError, OpenAIError, json.JSONDecodeError) as e:
+                last_error = e
+                await handle_error(e, attempt, MAX_RETRIES)
+                
+            except Exception as e:
+                logger.error(f"Unexpected error during API call: {str(e)}", exc_info=True)
+                raise LLMError(f"API call failed: {str(e)}")
+        
+        # If we've exhausted all retries and still failed
+        error_msg = f"Failed to make API call after {MAX_RETRIES} attempts"
+        if last_error:
+            error_msg += f". Last error: {str(last_error)}"
+        logger.error(error_msg, exc_info=True)
+        raise LLMRetryError(error_msg)
 
 # Initialize API keys on module import
 setup_api_keys()
@@ -270,21 +297,25 @@ async def stream_response(params: Dict[str, Any]) -> AsyncGenerator[Dict[str, An
             use_router = False
             logger.debug(f"Using direct API call for streaming with model {params['model']} (not in router)")
         
-        # Set OpenAI API key if available
-        openai_key = config.OPENAI_API_KEY
-        if openai_key and openai_key != "sk-1234efgh5678ijkl1234efgh5678ijkl1234efgh":
-            logger.debug("Using OpenAI API key for streaming API calls")
-            litellm.api_key = openai_key
+        # Get OpenRouter API key
+        openrouter_key = config.OPENROUTER_API_KEY
+        if not openrouter_key:
+            logger.warning("No OpenRouter API key found - streaming API calls will likely fail")
         
-        # Stream using the appropriate method
-        if use_router:
-            logger.debug("Streaming with model router and fallback strategy")
-            async for chunk in await litellm.router.acompletion(**params):
-                yield chunk
-        else:
-            logger.debug("Streaming with direct API call")
-            async for chunk in await litellm.acompletion(**params):
-                yield chunk
+        # Use the context manager to handle API key isolation
+        with api_key_context(api_key=openrouter_key, provider="OpenRouter"):
+            logger.debug(f"Using OpenRouter API key within isolated context for streaming")
+            logger.debug(f"Current API key for streaming: {litellm.api_key[:5]}... (truncated for security)" if litellm.api_key else "No API key set for streaming")
+            
+            # Stream using the appropriate method
+            if use_router:
+                logger.debug("Streaming with model router and fallback strategy")
+                async for chunk in await litellm.router.acompletion(**params):
+                    yield chunk
+            else:
+                logger.debug("Streaming with direct API call")
+                async for chunk in await litellm.acompletion(**params):
+                    yield chunk
     except Exception as e:
         logger.error(f"Error streaming response: {str(e)}")
         yield {"error": str(e)}

@@ -73,6 +73,8 @@ async def run_agent(
     # Add data providers tool if RapidAPI key is available
     if config.RAPID_API_KEY:
         thread_manager.add_tool(DataProvidersTool)
+    
+    # Removing TaskExecutionTool initialization
 
     system_message = { "role": "system", "content": get_system_prompt() }
 
